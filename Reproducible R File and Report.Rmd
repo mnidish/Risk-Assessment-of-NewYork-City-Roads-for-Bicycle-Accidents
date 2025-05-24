@@ -1,0 +1,1037 @@
+---
+title: "Rsik Assessment of NewYork City Roads for Bicycle Accidents"
+author: "Nidish Murugan - Siddhesh Suresh Kadam"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(warning = FALSE)
+
+library(sf)
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(gridExtra)
+library(patchwork)
+library(tidyr)
+library(leaflet)
+library(tmap)
+library(caret)
+```
+
+# Executive Summary
+Cyclist safety in New York City (NYC) has become an increasingly urgent concern as urban cycling gains popularity. This project addresses this challenge by developing a predictive model that assesses the risk of bicycle collisions on city roads. The model specifically focuses on non-behavioral factors, such as road conditions and infrastructure deficiencies, which are often overlooked in traditional safety analyses. By leveraging a comprehensive collection of datasets from NYC’s Open Data portal, the project identifies high-risk routes and offers insights that could guide policymakers on where to focus safety interventions.
+
+The model was built using Random Forest regression, a robust machine learning technique, and tested across multiple configurations. The final model, with an optimal number of variables randomly selected as 236, demonstrated strong predictive performance with a Root Mean Square Error (RMSE) of 0.0864, a Mean Absolute Error (MAE) of 0.0610, and an R-squared value of 0.4080. 
+
+These results indicate that the model can effectively identify high-risk routes for cyclists, capturing a significant portion of the factors influencing collision risk.
+The findings reveal that strategic improvements in road conditions and infrastructure could significantly reduce the frequency and severity of bicycle collisions. The precision and reliability of the model make it a valuable tool for enhancing urban cycling safety, providing actionable insights for both cyclists and city planners to mitigate risks and foster a safer environment for urban cyclists.
+
+# Objective
+The primary objective of this project is to develop a predictive model that assesses the risk of bicycle collisions on various routes in New York City, focusing on non-behavioral factors such as road conditions and infrastructure. By identifying and analyzing these risk factors, the project aims to provide actionable insights that can help cyclists choose safer routes and support city planners in implementing targeted safety interventions. Ultimately, the goal is to enhance cyclist safety in NYC by shifting from reactive to proactive safety measures, reducing the incidence of bicycle collisions across the city.
+
+
+# Introduction
+  Urban cycling has become an increasingly popular mode of transportation in New York City due to its sustainability, cost-effectiveness, and ability to navigate through traffic congestion. The rise in cycling activity is driven by environmental awareness, healthier lifestyle choices, and the city's efforts to expand bike lanes and improve infrastructure. However, this growth has also led to a significant increase in bicycle-related accidents. The city's dense and complex road network, high traffic volumes, and interactions between cyclists, vehicles, and pedestrians, particularly at intersections, pose substantial safety challenges.
+
+Traditionally, safety measures in New York City have been reactive, addressing areas with a history of accidents. While these interventions are necessary, they often fail to anticipate new high-risk areas that emerge due to changes in traffic patterns and urban development. This reactive approach overlooks the dynamic nature of the city's transportation environment, where ongoing construction and infrastructure changes can introduce new hazards. A more proactive strategy is needed to predict and address potential risks before accidents occur.
+
+This project aims to shift from reactive to proactive safety strategies by predicting high-risk routes for cyclists, allowing for preventive measures to be implemented. The focus is on analyzing non-behavioral factors such as road quality, lane markings, and the presence of cycling infrastructure, which are within the control of city authorities. By addressing these physical and environmental factors, the project seeks to create a safer environment for cyclists, reducing the likelihood of accidents and improving overall safety in New York City.
+
+
+# Motivation
+New York City continues to witness a high number of bicycle collisions, particularly at intersections and during peak traffic hours. Current safety measures are often reactive rather than proactive, focusing primarily on areas with a history of accidents. There is a pressing need for a datadriven approach to predict high-risk routes, enabling preventive actions to reduce collisions and enhance cyclist safety. By examining road-related factors that contribute to bicycle collisions, this project seeks to shift the focus towards more effective, proactive safety
+
+# About Data Source
+The foundation of this project is built on a rich dataset sourced from the NYC Open Data portal, which provides extensive information on various aspects of traffic and transportation in the city. The primary datasets used in this study include:
+
+1.  Motor Vehicle Collisions - Crashes: This dataset contains over 2.1 million records of crash incidents, offering detailed information on crash dates, times, locations, and contributing factors. It serves as the core dataset for understanding where and why bicycle collisions occur.
+
+2.  Motor Vehicle Collisions - Vehicles: With over 4.2 million records, this dataset provides crucial details about the types of vehicles involved in collisions, their states of registration, travel directions, and other factors that might influence the dynamics of accidents.
+
+
+## Data Sources
+-  The data was sourced from New York City's Open Data portal, accessible at https://opendata.cityofnewyork.us/. 
+-  The dataset is available for download in a ZIP file attached in the DropBox.
+```{r,include = FALSE}
+
+crashes <- read.csv('/Users/nidishsiva/Documents/DATA*6500/Final_Project/Data/Motor_Vehicle_Collisions_-_Crashes_20240709.csv')
+vehicles <- read.csv('/Users/nidishsiva/Documents/DATA*6500/Final_Project/Data/Motor_Vehicle_Collisions_-_Vehicles.csv')
+zipcodes <- st_read('/Users/nidishsiva/Documents/DATA*6500/Final_Project/Data/Modified_Zip_Code_Tabulation_Areas__MODZCTA_.csv')
+
+
+clustering_data <- read_sf("/Users/nidishsiva/Documents/DATA*6500/Final_Project/Data/Final-dataset.geojson")
+nyc_highways <- read_sf("/Users/nidishsiva/Documents/DATA*6500/Final_Project/Data/filtered_nyc_highways.geojson")
+bicycle_amenities<- read_sf("/Users/nidishsiva/Documents/DATA*6500/Final_Project/Data/filtered_bicycle_amenities.geojson")
+
+```
+
+# Data Handling
+The format of the date feature is formatted properly to maintain consistency and since year and month are one of the main features for the bicycle accidents happening.  Those features are extracted from the Data Feature and introduced as new Features.  
+
+Followed by Filtering the bicycle accidents.  Since, the dataset has all accidents from all types of vehicles.  The dataset is filtered where cyclist injured and killed are greater than 0
+```{r,include=FALSE}
+# Formatting Date Columns
+crashes$CRASH.DATE <- as.Date(crashes$CRASH.DATE, format="%m/%d/%Y")
+
+# Filtering Bicycle Crashes
+bicycle_crashes <- crashes %>%
+  filter(NUMBER.OF.CYCLIST.INJURED > 0 | NUMBER.OF.CYCLIST.KILLED >= 0)
+
+bicycle_crashes$Year <- year(bicycle_crashes$CRASH.DATE)
+bicycle_crashes$Month <- month(bicycle_crashes$CRASH.DATE, label = TRUE)
+
+```
+
+
+There are features in the data set such as '*VEHICLE.TYPE.CODE.1*', '*VEHICLE.TYPE.CODE.2*', '*VEHICLE.TYPE.CODE.3*' which has  details on what kind of vehicle got into  accdient.  So, all the different types of bicycles and spelling errors are Standardized for consistency.
+
+```{r,include=FALSE}
+keywords <- c('minibike', 'e-bike', 'bike', 'bicycle', 'ebike')
+pattern <- paste(keywords, collapse = '|')
+
+# Replace matching keywords with 'bicycle' in the relevant columns
+bicycle_crashes <- bicycle_crashes %>%
+  mutate(
+    VEHICLE.TYPE.CODE.1 = ifelse(grepl(pattern, VEHICLE.TYPE.CODE.1, ignore.case = TRUE), 'bicycle', VEHICLE.TYPE.CODE.1),
+    VEHICLE.TYPE.CODE.2 = ifelse(grepl(pattern, VEHICLE.TYPE.CODE.2, ignore.case = TRUE), 'bicycle', VEHICLE.TYPE.CODE.2),
+    VEHICLE.TYPE.CODE.3 = ifelse(grepl(pattern, VEHICLE.TYPE.CODE.3, ignore.case = TRUE), 'bicycle', VEHICLE.TYPE.CODE.3),
+    VEHICLE.TYPE.CODE.4 = ifelse(grepl(pattern, VEHICLE.TYPE.CODE.4, ignore.case = TRUE), 'bicycle', VEHICLE.TYPE.CODE.4),
+    VEHICLE.TYPE.CODE.5 = ifelse(grepl(pattern, VEHICLE.TYPE.CODE.5, ignore.case = TRUE), 'bicycle', VEHICLE.TYPE.CODE.5)
+  )
+
+# View the updated data frame
+print(nrow(bicycle_crashes))
+```
+Setting the CRS to 4326 and removing all the NULL value Latitude and Longitude
+```{r,include = FALSE}
+# bicycle_crashes --> Not a SF object with cleaned Lat and Lon
+bicycle_crashes <- bicycle_crashes |>
+          mutate(LATITUDE = as.numeric(as.character(LATITUDE)),
+                 LONGITUDE = as.numeric(as.character(LONGITUDE))) |>
+            filter(!is.na(LATITUDE) & !is.na(LONGITUDE))
+
+sf_data <- st_as_sf(bicycle_crashes, coords = c("LONGITUDE", "LATITUDE"), crs = 4326)
+
+
+# filtered_nyc --> bicycle crashes converted to SF object and further removing invalid co-ordinates.
+filtered_nyc <- sf_data %>%
+  filter(!(st_coordinates(geometry)[, 1] == 0 & st_coordinates(geometry)[, 2] == 0))
+
+
+```
+
+# Exploratory Data Analysis
+## Monthly Bicycle Crashes from 2012 - 2023
+
+```{r,echo=FALSE,fig.cap="Monthly Trend of Bicycle Crashes in NYC",fig.align='center',warning=FALSE}
+bicycle_crashes <- bicycle_crashes %>%
+  filter(Year <= 2023)
+
+# Aggregate the number of bicycle accidents per month
+monthly_bicycle_crashes <- bicycle_crashes %>%
+  group_by(Year, Month) %>%
+  summarize(Number_of_Crashes = n()) %>%
+  ungroup()
+
+# Plot monthly trends
+p <- ggplot(monthly_bicycle_crashes, aes(x = Month, y = Number_of_Crashes, color = as.factor(Year), group = Year)) +
+  geom_line() +
+  ggtitle('Monthly Number of Bicycle Collisions in NYC') +
+  xlab('Month') +
+  ylab('Number of Crashes') +
+  theme_minimal() +
+  theme(
+    legend.position = "right", 
+    plot.margin = margin(50, 50, 50, 50),  # Increased margins
+    panel.grid = element_blank(),
+    plot.caption = element_text(hjust = 0.5, vjust = 0, size = 10, color = "gray50")  
+  ) +
+  guides(color = guide_legend(title = "Year")) +
+  labs(caption = "Data Source: https://opendata.cityofnewyork.us/")
+
+print(p)
+
+
+```
+Figure 1 shows the monthly trends in bicycle collisions in New York City from 2012 to 2023. Each line represents a different year, illustrating the number of bicycle crashes that occurred each month.
+
+### Key Observations:
+-  *Consistency in Trends*: Bicycle collision trends have remained fairly stable year to year, with only minor variations. This indicates that the underlying risk factors contributing to bicycle crashes are relatively stable over time.  
+
+-  *2020 Dip*: The noticeable dip in 2020, likely due to COVID-19, introduces beneficial randomness into the data. This irregularity can improve the robustness of predictive models by helping them account for unexpected events and fluctuations.
+
+
+## Explanation for Using the Last Five Years of Data:
+-  *Relevance and Recency*:  The last five years of data are likely the most relevant for understanding current cycling trends and the latest developments in road infrastructure. Given that the trends have been fairly consistent over time, using the most recent data captures the latest patterns while minimizing the impact of older data that might not reflect current conditions.
+
+-  *Impact of Randomness*:  The irregularity observed during 2020 due to COVID-19 introduces valuable randomness into the data, which can enhance the predictive power of risk assessment models. By including this data, the models become better equipped to handle unusual patterns or anomalies, which are essential for assessing risk in a dynamic urban environment like New York City.
+
+-  *Computational Efficiency*: Focusing on the last five years also reduces the computational power required to process large datasets, making the analysis more efficient while still capturing the essential trends and variations needed for accurate predictions.
+
+```{r,include = FALSE}
+# Filtering for the last 5 years i.e. 2019 - 2023
+bicycle_crashes <- bicycle_crashes %>%
+  filter(Year >= 2019 & Year <= 2023)
+```
+
+```{r,echo=FALSE,fig.cap="Hourly Trend of Bicycle Crashes in NYC",fig.align='center'}
+# Extract the hour from CRASH.TIME
+bicycle_crashes$Hour <- as.numeric(format(strptime(bicycle_crashes$CRASH.TIME, format="%H:%M"), "%H"))
+
+# Calculate total number of crashes per hour
+hourly_data <- bicycle_crashes %>%
+  group_by(Hour) %>%
+  summarise(count = n())
+
+# Highlight specific hours
+highlight_hours <- c(0, 5, 10, 15, 20)
+hourly_data$highlight <- ifelse(hourly_data$Hour %in% highlight_hours, "highlight", "normal")
+
+# Plot total number of crashes per hour
+ggplot(hourly_data, aes(x = Hour, y = count)) +
+  geom_line(color = "darkblue", size = 1) +  
+  geom_point(aes(color = highlight), size = 3) +  
+  geom_text(data = hourly_data %>% filter(Hour %in% highlight_hours), 
+            aes(label = count), vjust = -1, hjust = 0.5, size = 3.5, color = "black") + 
+  scale_color_manual(values = c("highlight" = "red", "normal" = "darkblue")) +
+  labs(x = "Hour of the Day", y = "Number of Crashes", title = "Hourly Trend of Crashes") +
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),  # Remove grid lines
+    axis.ticks = element_blank(),  # Remove axis ticks
+    plot.caption = element_text(hjust = 0, size = 10, color = "gray50"),  
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 16),  
+    legend.position = "none" 
+  ) +
+  labs(caption = "Data Source: https://opendata.cityofnewyork.us/")
+```
+
+
+Peak Crash Hours: The highest number of bicycle crashes occur around 10 AM and 3 PM, aligning with increased traffic during rush hours and mid-afternoon. This suggests targeted safety interventions during these times could be effective.
+
+Implications:
+Focused Interventions: Addressing crash peaks during morning and afternoon rush hours with enhanced safety measures could reduce accidents.
+Off-Peak Safety: Maintaining safety during low-traffic hours through better lighting and road adjustments is crucial.
+This highlights the need to consider time-specific strategies for reducing bicycle crashes.
+
+
+```{r,echo=FALSE,fig.cap="Number of Bicycle Crashes by Time Slot in NYC",fig.align='center'}
+bicycle_crashes_filtered <- bicycle_crashes %>%
+  mutate(
+    TIME.SLOT = case_when(
+      is.na(CRASH.TIME) ~ 'Unknown',
+      CRASH.TIME == '' ~ 'Unknown',
+      as.integer(substr(CRASH.TIME, 1, 2)) >= 6 & as.integer(substr(CRASH.TIME, 1, 2)) < 12 ~ 'Morning',
+      as.integer(substr(CRASH.TIME, 1, 2)) >= 12 & as.integer(substr(CRASH.TIME, 1, 2)) < 18 ~ 'Afternoon',
+      as.integer(substr(CRASH.TIME, 1, 2)) >= 18 & as.integer(substr(CRASH.TIME, 1, 2)) < 24 ~ 'Evening',
+      TRUE ~ 'Night'
+    ),
+    TIME.SLOT = factor(TIME.SLOT, levels = c("Morning", "Afternoon", "Evening", "Night", "Unknown"))
+  )
+
+time_slot_counts <- bicycle_crashes_filtered %>%
+  group_by(TIME.SLOT) %>%
+  summarise(Count = n())
+
+y_max <- max(time_slot_counts$Count) * 1.1
+
+ggplot(time_slot_counts, aes(x = TIME.SLOT, y = Count, group = 1)) +
+  geom_line(color = "darkblue", size = 1.5) +
+  geom_point(aes(color = "Number of Crashes"), size = 4) +  # Add color legend for points
+  geom_label(aes(label = scales::comma(Count)), size = 5, color = "white", fill = "darkred", fontface = "bold", 
+             label.size = 0.3, vjust = -0.5) +
+  ylim(0, y_max) +
+  labs(title = "Number of Bicycle Crashes by Time Slot",
+       x = "Time Slot",
+       y = "Number of Crashes",
+       color = "") +  # Remove the title from the color legend
+  theme_minimal(base_size = 15) +
+  theme(
+    panel.grid = element_blank(),
+    axis.ticks = element_blank(),
+    plot.caption = element_text(hjust = 0, size = 10, color = "gray50"),
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+    legend.position = "right"  # Place the legend on the right
+  ) +
+  labs(caption = "Data Source: https://opendata.cityofnewyork.us/")
+
+
+
+```
+
+## Analysis 
+*Afternoon Peak*: Both analyses from Figure 2 and Figure 3 confirm the afternoon as the most dangerous period for bicycle crashes, driven by high traffic.
+
+```{r,echo=FALSE,fig.cap="Displaying collision hotspots across NYC by highlighting areas with a high frequency of accidents from 2019 - 2023",fig.align='center'}
+
+bicycle_crashes$acc_count <- 1
+total_acc_count <- bicycle_crashes |>
+  group_by(ZIP.CODE) |>
+  summarise(zip_acc_count = sum(acc_count))
+
+zipcodes <- st_as_sf(zipcodes, wkt = "the_geom")
+st_crs(zipcodes) <- 4326
+
+names(zipcodes) <- c("ZIP.CODE","label","ZCTA","pop_est","the_geom")
+zipcodes <- zipcodes |>
+          mutate(ZIP.CODE = as.numeric(as.character(ZIP.CODE)))
+joined_data <- left_join(zipcodes, total_acc_count, by = "ZIP.CODE")
+
+ggplot() +
+  geom_sf(data = joined_data, aes(fill = zip_acc_count), color = "black", size = 0.2) +
+  scale_fill_viridis_c(name = "Accident Count", option = "C", direction = -1) +
+  labs(title = "Bicycle Accidents by Zip Code in New York City", 
+       x = NULL,  
+       y = NULL) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 18),
+    axis.text.x = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks = element_blank(),
+    legend.position = "right",
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.background = element_rect(fill = "white", color = NA)
+  ) +
+  annotate("text", x = Inf, y = -Inf, label = "Source: https://opendata.cityofnewyork.us/", 
+           hjust = 1, vjust = -1, size = 3.5, color = "gray50", angle = 0)
+
+
+```
+
+### Explanation:
+The plot shows the distribution of bicycle accidents across various ZIP codes in New York City (NYC) for the last five years (2019 - 2023). The intensity of the color represents the number of bicycle accidents, with darker colors indicating higher accident counts.
+### Key Observations:
+-  *High-Risk Areas*: The plot clearly shows that certain areas, especially in Manhattan and Brooklyn, have much higher bicycle accident rates. These are busy, high-traffic neighborhoods where cyclists face greater risks.
+
+-  *Improving Safety*: By pinpointing where most accidents occur, city planners can focus on making those areas safer for cyclists. This might include adding protected bike lanes and improving road conditions, ultimately encouraging more people to bike safely across the city.
+
+
+Focusing on Manhattan, one of the boroughs of New York City, allows us to manage the computational intensity associated with extracting and plotting detailed road data for the entire city. Manhattan, being a densely populated and highly trafficked area, provides a significant and representative sample of the road and crash dynamics present in NYC. By concentrating on this borough, we can conduct a thorough analysis of Non-Behavioral factors while keeping the computational load manageable. This approach ensures that we can perform detailed spatial analysis without the risk of overwhelming computational resources, which would be necessary if we were to extend the same level of detail to the entire city.
+
+
+```{r,echo=FALSE,fig.cap="Analysis of Crash Locations by Contributing Factor",fig.align='center'}
+# Load necessary libraries
+library(sf)
+library(dplyr)
+library(tmap)
+library(osmdata)# Factors to consider for filtering crash data
+factors_to_consider <-c('Pavement Slippery','Traffic Control Device Improper/Non-Working','Other Lighting Defects','View Obstructed/Limited','Obstruction/Debris','Pavement Defective','Pedestrian/Bicyclist/Other Pedestrian Error/Confusion','Glare','Oversized Vehicle','Lane Marking Improper/Inadequate','Outside Car Distraction','Failure to Keep Right','Tow Hitch Defective')# Filter crashes data by contributing factors
+spatial_crashes <- filtered_nyc %>%
+  filter(CONTRIBUTING.FACTOR.VEHICLE.1 %in% factors_to_consider)%>%
+  filter(!is.na(geometry))# Assign colors to each contributing factor
+factor_colors <-c('Pavement Slippery'='#FF6347','Traffic Control Device Improper/Non-Working'='#4682B4','Other Lighting Defects'='#6A5ACD','View Obstructed/Limited'='#32CD32','Obstruction/Debris'='#FFD700','Pavement Defective'='#FF4500','Pedestrian/Bicyclist/Other Pedestrian Error/Confusion'='#FF1493','Glare'='#FF69B4','Oversized Vehicle'='#8A2BE2','Lane Marking Improper/Inadequate'='#00CED1','Outside Car Distraction'='#20B2AA','Failure to Keep Right'='#7FFF00','Tow Hitch Defective'='#FF8C00')
+bbox <-c(-74.01934,40.69978,-73.91042,40.87762)
+boundary_data <- opq(bbox = bbox)%>%
+  add_osm_feature(key ="place", value ="island")%>%
+  osmdata_sf()
+
+roads_data <- opq(bbox = bbox)%>%
+  add_osm_feature(key ="highway")%>%
+  osmdata_sf()
+
+manhattan_boundary <- boundary_data$osm_multipolygons
+roads_polygons <- roads_data$osm_lines
+
+# Convert the bounding box to an sf object
+manhattan_bbox <- st_bbox(c(xmin =-74.01934, ymin =40.69978, xmax =-73.91042, ymax =40.87762), crs = st_crs(spatial_crashes))
+manhattan_bbox_sf <- st_as_sfc(manhattan_bbox)
+crashes_manhattan <- spatial_crashes %>%
+  st_as_sf(coords =c("X","Y"), crs = st_crs(spatial_crashes))%>%
+  st_crop(manhattan_bbox_sf)
+
+# Ensure all spatial objects have the same CRS
+spatial_crashes <- st_transform(spatial_crashes, crs =4326)
+roads_polygons <- st_transform(roads_polygons, crs =4326)
+manhattan_bbox <- st_bbox(c(xmin =-74.01934, ymin =40.69978, xmax =-73.91042, ymax =40.87762), crs = st_crs(4326))
+manhattan_bbox_sf <- st_as_sfc(manhattan_bbox)
+crashes_manhattan <- spatial_crashes %>%
+  st_crop(manhattan_bbox_sf)
+
+roads_manhattan <- st_crop(roads_polygons, manhattan_bbox_sf)# Plot the filtered data using tmap with adjusted legend width
+tm_shape(roads_manhattan)+
+  tm_lines(col ="gray80", lwd =0.5)+# Plot Manhattan roads
+  tm_shape(crashes_manhattan)+
+  tm_dots(col ="CONTRIBUTING.FACTOR.VEHICLE.1", size =0.1, palette = factor_colors, title ="Contributing Factor")+# Plot filtered crash locations
+  tm_layout(
+    title ="Crash Locations within Manhattan",
+    legend.outside =TRUE,
+    legend.width =1.2,# Increase legend width
+    frame =FALSE) 
+```
+## Analysis and Interpretation:
+
+This plot provides a detailed visualization of bicycle crash locations across Manhattan, color-coded by contributing factors such as pavement conditions, traffic control issues, and visibility obstructions. Each colored dot represents a crash incident, with the legend indicating the specific contributing factor associated with each crash.
+
+## Key Observations:
+*High Density of Crashes*: The plot shows a high concentration of crashes throughout Manhattan, particularly in areas like Midtown and Lower Manhattan. These regions are known for their dense traffic and complex road networks, which likely contribute to the higher incidence of crashes.
+
+*Variety of Contributing Factors*: The diverse color distribution indicates that crashes are caused by a wide range of factors. For example, factors like "Pavement Slippery," "Glare," and "Lane Marking Improper/Inadequate" are frequently observed, highlighting infrastructure-related risks for cyclists.
+
+*Clusters of Specific Factors*: Some areas appear to have clusters of crashes with specific contributing factors. For example, certain blocks may have multiple crashes related to "Traffic Control Device Improper/Non-Working," suggesting potential issues with traffic signal functioning or visibility in those locations.
+
+*Spatial Distribution*: The crashes are widespread across the borough, indicating that while certain areas may have higher densities, the risk of crashes exists throughout Manhattan. This highlights the need for widespread safety measures rather than localized interventions.
+
+### *Interpretation*:
+The spatial distribution of crashes across Manhattan suggests that a variety of environmental and infrastructural factors contribute to cycling risks in this area. The presence of multiple contributing factors in certain areas indicates the need for targeted interventions to address specific issues like poor road conditions or inadequate traffic controls.
+
+Moreover, the density of crashes in central areas underscores the importance of focusing on high-traffic zones for safety improvements. The data can be used by urban planners and policymakers to prioritize areas for infrastructure upgrades, such as improved pavement, better lane markings, and enhanced traffic signal visibility, to reduce the incidence of bicycle crashes.
+
+In summary, this plot is a valuable tool for identifying risk factors and high-risk areas for bicycle crashes in Manhattan, providing a foundation for informed decision-making aimed at enhancing cyclist safety in one of the busiest boroughs of New York City.
+
+
+# Data Pre-Processing
+
+In this analysis, extensive data pre-processing was performed to prepare the dataset for modeling. The steps involved include filtering bicycle-related crashes, identifying and selecting relevant factors contributing to the crashes, and spatially joining different data layers.
+
+Given the computational intensity of these steps, the final pre-processed dataset, named *_'clustering_data'_* , was saved for future use. This approach ensures that the modeling phase can be executed directly without the need to repeat the time-consuming pre-processing steps.
+
+_Note:_ To reduce computational overhead, you can skip the data pre-processing steps and load the pre-processed dataset *_'clustering_data'_* directly into your environment for modeling. 
+
+
+
+### Data Filtering and Focus on Bicycle-Related Crashes
+A series of essential data pre-processing steps to prepare the dataset for subsequent analysis and modeling, particularly focusing on bicycle crashes were performed in the data pre-processing steps. Initially, keywords related to bicycles were defined and employed to filter the dataset, ensuring that only relevant records involving bicycles were retained. This filtering was done to ensure that the analysis remained centered on bicycle-related incidents. Contributing factors to crashes were identified and used to refine the dataset further, allowing a focused examination of specific road or environmental conditions that may have contributed to these crashes.
+```{r,include=FALSE,results = "hide", eval=FALSE}
+# Define keywords related to bicycles
+keywords <- c(
+  'minibike', 'e-bike', 'bike', 'bicycle', 'ebike', 
+  'DIRT BIKE', 'BICYC', 'E BIK', 'MINICYCLE', 'E-UNICYCLE'
+)
+pattern <- paste(keywords, collapse = '|')
+
+# Filter bicycle crashes based on vehicle type
+bicycle_crashes <- bicycle_crashes[apply(
+  bicycle_crashes[, c("VEHICLE.TYPE.CODE.1", "VEHICLE.TYPE.CODE.2", 
+                      "VEHICLE.TYPE.CODE.3", "VEHICLE.TYPE.CODE.4", 
+                      "VEHICLE.TYPE.CODE.5")], 
+  1, function(x) any(grepl(pattern, x, ignore.case = TRUE))
+), ]
+
+# Define factors to consider in the analysis
+factors_to_consider <- c(
+  'Pavement Slippery', 'Traffic Control Device Improper/Non-Working', 
+  'Other Lighting Defects', 'View Obstructed/Limited', 
+  'Obstruction/Debris', 'Pavement Defective', 
+  'Pedestrian/Bicyclist/Other Pedestrian Error/Confusion', 
+  'Glare', 'Oversized Vehicle', 
+  'Lane Marking Improper/Inadequate', 
+  'Outside Car Distraction', 
+  'Tire Failure/Inadequate', 
+  'Failure to Keep Right', 
+  'Tow Hitch Defective'
+)
+pattern <- paste(factors_to_consider, collapse = '|')
+
+# Filter bicycle crashes based on contributing factors
+bicycle_crashes <- bicycle_crashes[apply(
+  bicycle_crashes[, c("CONTRIBUTING.FACTOR.VEHICLE.1", 
+                      "CONTRIBUTING.FACTOR.VEHICLE.2", 
+                      "CONTRIBUTING.FACTOR.VEHICLE.3", 
+                      "CONTRIBUTING.FACTOR.VEHICLE.4", 
+                      "CONTRIBUTING.FACTOR.VEHICLE.5")], 
+  1, function(x) any(grepl(pattern, x, ignore.case = TRUE))
+), ]
+
+# Create a buffer around collision points
+collision_buffer <- st_buffer(bicycle_crashes, dist = 2)
+
+# Calculate the percentage of missing values and filter columns
+missing_percentage <- colSums(is.na(bicycle_amenities)) / nrow(bicycle_amenities) * 100
+columns_to_keep <- names(missing_percentage[missing_percentage <= 60])
+
+bicycle_amenities_filt <- bicycle_amenities %>%
+  dplyr::select(all_of(columns_to_keep))
+
+# Identify intersections between amenities and collision buffer
+intersect_indices <- st_intersects(bicycle_amenities_filt, collision_buffer, sparse = FALSE)
+bicycle_amenities_filt <- bicycle_amenities_filt[apply(intersect_indices, 1, any), , drop = FALSE]
+
+# Perform spatial join between collision buffer and filtered amenities
+buffer_amenities_left_join <- st_join(collision_buffer, bicycle_amenities_filt, join = st_intersects, left = TRUE)
+
+```
+
+
+```{r,include=FALSE,eval=FALSE}
+# Filter columns with <= 97% missing values
+missing_percentage <- colSums(is.na(nyc_highways))/ nrow(nyc_highways)*100
+columns_to_keep <-names(missing_percentage[missing_percentage <=97])
+
+
+nyc_highways_filt <- nyc_highways %>%
+  dplyr::select(all_of(columns_to_keep))
+
+# Filter highways based on intersection with buffered amenities
+intersect_indices <- st_intersects(nyc_highways_filt, buffer_amenities_left_join, sparse =FALSE)
+nyc_highways_filt <- nyc_highways_filt[apply(intersect_indices,1,any),, drop =FALSE]# Spatial join between collision buffer and filtered highways
+buffer_highway_left_join <- st_join(collision_buffer, nyc_highways_filt, join = st_intersects, left =TRUE)
+# Show column names
+
+names(buffer_highway_left_join) 
+```
+
+### Temporal Categorization and Data Preparation for Modeling
+A 'TIME.SLOT' column was added to categorize each crash by the time of day, which allowed for time-based analysis to identify peak hours for bicycle crashes. To prepare the data for modeling, categorical columns were converted into boolean values, missing data was handled by replacing it with "Not Available," and numerical data, such as speed limits, was properly formatted. The dataset was then grouped by COLLISION_ID, summarizing key features and aggregating data related to each crash. One-hot encoding was applied to categorical variables, converting them into a binary format necessary for many machine learning algorithms.
+```{r,include=FALSE,eval=FALSE}
+# Add TIME.SLOT column based on CRASH.TIME
+buffer_highway_left_join_nyc <- buffer_highway_left_join_nyc %>%
+  mutate(
+    TIME.SLOT = case_when(is.na(CRASH.TIME)~'Unknown',
+      CRASH.TIME ==''~'Unknown',as.integer(substr(CRASH.TIME,1,2))>=6&as.integer(substr(CRASH.TIME,1,2))<12~'Morning',as.integer(substr(CRASH.TIME,1,2))>=12&as.integer(substr(CRASH.TIME,1,2))<18~'Afternoon',as.integer(substr(CRASH.TIME,1,2))>=18&as.integer(substr(CRASH.TIME,1,2))<24~'Evening',TRUE~'Night'))
+
+
+# Select specific columns
+columns_to_keep <-c('TIME.SLOT','CROSS.STREET.NAME','OFF.STREET.NAME','NUMBER.OF.PERSONS.INJURED','NUMBER.OF.PERSONS.KILLED','COLLISION_ID','Year','Month','access','bicycle','crossing','crossing.island','crossing.markings','crossing.signals','footway','highway','lanes','lit','maxspeed','oneway','service','surface','tiger.name_type')
+bicycle_crashes <- buffer_highway_left_join_nyc %>%
+  dplyr::select(all_of(columns_to_keep))
+
+
+# Convert CROSS.STREET.NAME and OFF.STREET.NAME to boolean columns
+bicycle_crashes <- bicycle_crashes %>%
+  mutate(
+    CROSS.STREET.NAME = ifelse(CROSS.STREET.NAME !=""&!is.na(CROSS.STREET.NAME),1,0),
+    OFF.STREET.NAME = ifelse(OFF.STREET.NAME !=""&!is.na(OFF.STREET.NAME),1,0))# List of columns to replace NA with "Not Available"
+columns_to_replace <-c("access","bicycle","crossing","crossing.markings","footway","highway","service","surface","tiger.name_type")
+bicycle_crashes <- bicycle_crashes %>%
+  mutate(across(all_of(columns_to_replace),~replace_na(.x,"Not Available")))# Convert categorical columns to binary
+
+
+
+
+bicycle_crashes <- bicycle_crashes %>%
+  mutate(
+    lit = ifelse(lit =="yes",1,0),
+    crossing.island = ifelse(crossing.island =="yes",1,0),
+    crossing.signals = ifelse(crossing.signals =="yes",1,0),
+    oneway = ifelse(oneway =="yes",1,0))# Extract numerical values from maxspeed column
+bicycle_crashes <- bicycle_crashes %>%
+  mutate(maxspeed =as.numeric(gsub("[^0-9]","", maxspeed)))
+
+```
+
+
+```{r,include=FALSE,eval=FALSE}
+bicycle_crashes_grouped <- bicycle_crashes %>%
+  group_by(COLLISION_ID)%>%
+  summarise(# Replace with mode value
+    TIME.SLOT =names(sort(table(TIME.SLOT), decreasing =TRUE)[1]),
+    NUMBER.OF.PERSONS.INJURED =names(sort(table(NUMBER.OF.PERSONS.INJURED), decreasing =TRUE)[1]),
+    NUMBER.OF.PERSONS.KILLED =names(sort(table(NUMBER.OF.PERSONS.KILLED), decreasing =TRUE)[1]),
+    Year =names(sort(table(Year), decreasing =TRUE)[1]),
+    Month =names(sort(table(Month), decreasing =TRUE)[1]),# Boolean logic: if any value is 1, return 1; else 0
+    CROSS.STREET.NAME = ifelse(any(CROSS.STREET.NAME ==1),1,0),
+    OFF.STREET.NAME = ifelse(any(OFF.STREET.NAME ==1),1,0),
+    lit = ifelse(any(lit ==1, na.rm =TRUE),1,0),
+    oneway = ifelse(any(oneway ==1, na.rm =TRUE),1,0),
+    crossing.island = ifelse(any(crossing.island ==1, na.rm =TRUE),1,0),
+    crossing.signals = ifelse(any(crossing.signals ==1, na.rm =TRUE),1,0),# Concatenate string values except 'Not Available'
+    access = ifelse(all(access =="Not Available"),"Not Available", 
+                    paste(unique(na.omit(access[access !="Not Available"])), collapse ="-")),
+    bicycle = ifelse(all(bicycle =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(bicycle[bicycle !="Not Available"])), collapse ="-")),
+    crossing = ifelse(all(crossing =="Not Available"),"Not Available", 
+                      paste(unique(na.omit(crossing[crossing !="Not Available"])), collapse ="-")),
+    crossing.markings = ifelse(all(crossing.markings =="Not Available"),"Not Available", 
+                               paste(unique(na.omit(crossing.markings[crossing.markings !="Not Available"])), collapse ="-")),
+    footway = ifelse(all(footway =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(footway[footway !="Not Available"])), collapse ="-")),
+    highway = ifelse(all(highway =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(highway[highway !="Not Available"])), collapse ="-")),
+    lanes = ifelse(all(lanes =="Not Available"),"Not Available", 
+                   paste(unique(na.omit(lanes[lanes !="Not Available"])), collapse ="-")),
+    service = ifelse(all(service =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(service[service !="Not Available"])), collapse ="-")),
+    surface = ifelse(all(surface =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(surface[surface !="Not Available"])), collapse ="-")),
+    tiger.name_type = ifelse(all(tiger.name_type =="Not Available"),"Not Available", 
+                             paste(unique(na.omit(tiger.name_type[tiger.name_type !="Not Available"])), collapse ="-")),# Use numeric value in maxspeed if it exists
+    maxspeed = ifelse(any(!is.na(maxspeed)),max(maxspeed, na.rm =TRUE),NA_real_),# Combine geometries for the group
+    geometry = st_union(geometry))%>%
+  ungroup()# Save the grouped data to a GeoJSON file
+
+```
+
+
+```{r,include=FALSE,eval=FALSE}
+# Grouping the data by COLLISION_ID and summarizing key features
+bicycle_crashes_grouped <- bicycle_crashes %>%
+  group_by(COLLISION_ID)%>%
+  summarise(
+    TIME.SLOT =names(sort(table(TIME.SLOT), decreasing =TRUE)[1]),
+    NUMBER.OF.PERSONS.INJURED =names(sort(table(NUMBER.OF.PERSONS.INJURED), decreasing =TRUE)[1]),
+    NUMBER.OF.PERSONS.KILLED =names(sort(table(NUMBER.OF.PERSONS.KILLED), decreasing =TRUE)[1]),
+    Year =names(sort(table(Year), decreasing =TRUE)[1]),
+    Month =names(sort(table(Month), decreasing =TRUE)[1]),
+    CROSS.STREET.NAME = ifelse(any(CROSS.STREET.NAME ==1),1,0),
+    OFF.STREET.NAME = ifelse(any(OFF.STREET.NAME ==1),1,0),
+    lit = ifelse(any(lit ==1, na.rm =TRUE),1,0),
+    oneway = ifelse(any(oneway ==1, na.rm =TRUE),1,0),
+    crossing.island = ifelse(any(crossing.island ==1, na.rm =TRUE),1,0),
+    crossing.signals = ifelse(any(crossing.signals ==1, na.rm =TRUE),1,0),
+    access = ifelse(all(access =="Not Available"),"Not Available", 
+                    paste(unique(na.omit(access[access !="Not Available"])), collapse ="-")),
+    bicycle = ifelse(all(bicycle =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(bicycle[bicycle !="Not Available"])), collapse ="-")),
+    crossing = ifelse(all(crossing =="Not Available"),"Not Available", 
+                      paste(unique(na.omit(crossing[crossing !="Not Available"])), collapse ="-")),
+    crossing.markings = ifelse(all(crossing.markings =="Not Available"),"Not Available", 
+                               paste(unique(na.omit(crossing.markings[crossing.markings !="Not Available"])), collapse ="-")),
+    footway = ifelse(all(footway =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(footway[footway !="Not Available"])), collapse ="-")),
+    highway = ifelse(all(highway =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(highway[highway !="Not Available"])), collapse ="-")),
+    lanes = ifelse(all(lanes =="Not Available"),"Not Available", 
+                   paste(unique(na.omit(lanes[lanes !="Not Available"])), collapse ="-")),
+    service = ifelse(all(service =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(service[service !="Not Available"])), collapse ="-")),
+    surface = ifelse(all(surface =="Not Available"),"Not Available", 
+                     paste(unique(na.omit(surface[surface !="Not Available"])), collapse ="-")),
+    tiger.name_type = ifelse(all(tiger.name_type =="Not Available"),"Not Available", 
+                             paste(unique(na.omit(tiger.name_type[tiger.name_type !="Not Available"])), collapse ="-")),
+    maxspeed = ifelse(any(!is.na(maxspeed)),max(maxspeed, na.rm =TRUE),NA_real_),
+    geometry = st_union(geometry))%>%
+  ungroup()
+
+st_write(bicycle_crashes_grouped,"bicycle_crashes_grouped.geojson", delete_dsn =TRUE)# Read and clean the grouped data
+bicycle_crashes_grouped <- read_sf("bicycle_crashes_grouped.geojson")%>%
+  mutate(
+    CROSS.STREET.NAME = replace_na(CROSS.STREET.NAME,0),
+    OFF.STREET.NAME = replace_na(OFF.STREET.NAME,0),
+    lit = replace_na(lit,0),
+    oneway = replace_na(oneway,0),
+    crossing.island = replace_na(crossing.island,0),
+    crossing.signals = replace_na(crossing.signals,0),
+    access = replace_na(access,'Not Available'),
+    bicycle = replace_na(bicycle,'Not Available'),
+    crossing = replace_na(crossing,'Not Available'),
+    crossing.markings = replace_na(crossing.markings,'Not Available'),
+    footway = replace_na(footway,'Not Available'),
+    highway = replace_na(highway,'Not Available'),
+    lanes = replace_na(lanes,'Not Available'),
+    service = replace_na(service,'Not Available'),
+    surface = replace_na(surface,'Not Available'),
+    tiger.name_type = replace_na(tiger.name_type,'Not Available'))%>%
+  mutate(maxspeed = replace_na(maxspeed, median(maxspeed, na.rm =TRUE)))# Factorize relevant columns
+bicycle_crashes_grouped <- bicycle_crashes_grouped %>%
+  mutate(across(c(highway, lanes, TIME.SLOT, Month, Year, access, bicycle, crossing, crossing.markings, footway, service, surface, tiger.name_type), as.factor))# Perform one-hot encoding
+encoded_data <-list(
+  highway = model.matrix(~highway -1, data = bicycle_crashes_grouped),
+  lanes = model.matrix(~lanes -1, data = bicycle_crashes_grouped),
+  time_slot = model.matrix(~TIME.SLOT -1, data = bicycle_crashes_grouped),
+  month = model.matrix(~Month -1, data = bicycle_crashes_grouped),
+  year = model.matrix(~Year -1, data = bicycle_crashes_grouped),
+  access = model.matrix(~access -1, data = bicycle_crashes_grouped),
+  bicycle = model.matrix(~bicycle -1, data = bicycle_crashes_grouped),
+  crossing = model.matrix(~crossing -1, data = bicycle_crashes_grouped),
+  crossing_markings = model.matrix(~crossing.markings -1, data = bicycle_crashes_grouped),
+  footway = model.matrix(~footway -1, data = bicycle_crashes_grouped),
+  service = model.matrix(~service -1, data = bicycle_crashes_grouped),
+  surface = model.matrix(~surface -1, data = bicycle_crashes_grouped),
+  tiger_name_type = model.matrix(~tiger.name_type -1, data = bicycle_crashes_grouped))%>%
+  lapply(as.data.frame)%>%
+  bind_cols()# Bind the encoded columns back and remove original categorical columns
+bicycle_crashes_grouped <- bicycle_crashes_grouped %>%
+  bind_cols(encoded_data)%>%
+  dplyr::select(-c(highway, lanes, TIME.SLOT, Month, Year, access, bicycle, crossing, crossing.markings, footway, service, surface, tiger.name_type))
+
+clustering_data <- bicycle_crashes_grouped %>%
+  dplyr::select(-geometry)# Identify character columns in clustering_data
+character_column_names <-names(sapply(clustering_data,is.character)[sapply(clustering_data,is.character)==TRUE])# Print the character columns
+print(character_column_names)
+```
+
+### Spatial Buffer Creation and Handling Missing Values
+A spatial buffer was created around each crash location to explore the immediate surroundings, including nearby amenities or road conditions that might have influenced the occurrence of crashes. Missing values were handled by removing columns with a high percentage of missing data, ensuring that the remaining data was more reliable for analysis. A spatial join was conducted to link the buffered crash locations with nearby amenities, enabling an analysis of how these amenities might have affected crash occurrences. Similarly, highways data was filtered and joined with the buffered crash locations to focus on relevant road conditions that intersected with crash sites.
+```{r,include=FALSE,eval=FALSE}
+crashes_buffer_15 <- st_buffer(crashes, dist = 15)
+
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(
+    CRASH.TIME = ifelse(CRASH.TIME == "" | is.na(CRASH.TIME), NA, CRASH.TIME),
+    hour = as.numeric(substr(CRASH.TIME, 1, 2))
+  )
+
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(hour = replace_na(hour, 10))
+
+# Check for any NA values in the hour column
+sum(is.na(crashes_buffer_15$hour))
+
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(risk_factor = 0.5) 
+
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(
+    day_night = ifelse(hour >= 6 & hour < 18, "Day", "Night")
+  )
+
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(
+    risk_factor = (NUMBER.OF.PERSONS.KILLED * 5) +
+                  (NUMBER.OF.PERSONS.INJURED * 2.5) +
+                  ifelse(day_night == "Night", 3, 1)
+  )
+
+crashes_buffer_15 <- st_join(crashes_buffer_15, crashes_buffer_15, join = st_intersects) 
+
+crashes_buffer_15 <- crashes_buffer_15 |>
+  group_by(COLLISION_ID.x) %>%
+  mutate(count_other_crashes = n() - 1) %>%
+  ungroup() %>%
+  dplyr::select(-COLLISION_ID.y)
+
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(
+    risk_factor = risk_factor.x + (count_other_crashes*2)
+  )
+
+min_value <- min(crashes_buffer_15$risk_factor, na.rm = TRUE)
+max_value <- max(crashes_buffer_15$risk_factor, na.rm = TRUE)
+
+# Normalize the column to a range of 0 to 1
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(risk_factor = (risk_factor - min_value) / (max_value - min_value))
+
+```
+### Calculation of Risk Factor and Final Data Preparation
+Finally, the data was prepared by combining the encoded features, removing unnecessary columns, and calculating a risk factor based on various attributes, such as the number of injuries and the time of day. This risk factor provided a quantifiable measure of crash severity, which was essential for further analysis or predictive modeling. These data pre-processing steps ensured that the dataset was clean, relevant, and optimized for the computationally intensive tasks that followed, such as clustering and modeling. Given the computational demands of these steps, the processed dataset was saved as clustering_data and was loaded directly for modeling to save time and resources.
+```{r,include=FALSE,eval=FALSE}
+# Create a buffer around crashes and calculate hour from CRASH.TIME
+crashes_buffer_15 <- st_buffer(crashes, dist =15)%>%
+  mutate(
+    CRASH.TIME = ifelse(CRASH.TIME ==""|is.na(CRASH.TIME),NA, CRASH.TIME),
+    hour =as.numeric(substr(CRASH.TIME,1,2)))%>%
+  mutate(hour = replace_na(hour,10))# Assign initial risk factor and categorize time as day or night
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(
+    risk_factor =0.5,
+    day_night = ifelse(hour >=6& hour <18,"Day","Night"),
+    risk_factor =(NUMBER.OF.PERSONS.KILLED *5)+(NUMBER.OF.PERSONS.INJURED *2.5)+
+                  ifelse(day_night =="Night",3,1))# Join with itself to find intersecting crashes and count them
+crashes_buffer_15 <- st_join(crashes_buffer_15, crashes_buffer_15, join = st_intersects)%>%
+  group_by(COLLISION_ID.x)%>%
+  mutate(count_other_crashes = n()-1)%>%
+  ungroup()%>%
+  dplyr::select(-COLLISION_ID.y)%>%
+  mutate(risk_factor = risk_factor.x +(count_other_crashes *2))# Normalize the risk_factor column
+min_value <-min(crashes_buffer_15$risk_factor, na.rm =TRUE)
+max_value <-max(crashes_buffer_15$risk_factor, na.rm =TRUE)
+
+crashes_buffer_15 <- crashes_buffer_15 %>%
+  mutate(risk_factor =(risk_factor - min_value)/(max_value - min_value))
+```
+
+
+```{r,include=FALSE,eval=FALSE}
+clustering_data$COLLISION_ID <- as.character(clustering_data$COLLISION_ID)
+crashes_buffer_15$COLLISION_ID.x <- as.character(crashes_buffer_15$COLLISION_ID.x)
+
+# Create the lookup vector
+risk_factor_lookup <- setNames(crashes_buffer_15$risk_factor, crashes_buffer_15$COLLISION_ID.x)
+
+# Use match to find the indices and directly assign the risk_factor
+clustering_data$risk_factor <- risk_factor_lookup[match(clustering_data$COLLISION_ID, names(risk_factor_lookup))]
+
+```
+
+# Calculation of Risk Factor
+The risk factor was calculated as a composite measure to assess the severity and potential danger associated with each bicycle crash. The calculation began by establishing a spatial buffer around each crash location, set at a 15-meter radius, to account for nearby crashes and their potential influence. The CRASH.TIME was extracted and categorized into hour segments to determine whether the crash occurred during the day or night, as time of day can significantly impact visibility and traffic conditions.
+
+Next, the initial risk factor was set to a baseline value of 0.5, and it was further adjusted based on specific attributes of the crash. For example, the number of persons killed in the crash was multiplied by 5, reflecting the high severity associated with fatalities, while the number of persons injured was multiplied by 2.5. These weighted factors were summed to create a preliminary risk score for each crash.
+
+The risk factor was also influenced by the time of day; crashes occurring at night were given an additional weight of 3 due to the higher risks associated with reduced visibility and potentially more dangerous driving conditions. Following this, the crash data was joined with itself to identify intersections with other nearby crashes within the buffer zone. This allowed for the inclusion of the number of nearby crashes as an additional risk component, where each intersecting crash added 2 points to the overall risk factor.
+
+Finally, the calculated risk factors were normalized to a range between 0 and 1 to standardize the values for subsequent analysis and comparison. This normalization ensured that the risk factor could be consistently interpreted across different crashes, allowing for a clearer understanding of which incidents were associated with higher levels of danger or severity. The resulting risk factor provided a quantifiable measure that could be used in further analysis or predictive modeling to prioritize safety interventions and understand crash dynamics better.
+
+
+# Overview of the Clustered Data
+The clustered dataset contains 20 features and 472 fields, offering a detailed representation of various characteristics associated with bicycle crashes within a specific area. The data is organized in a simple feature collection (sf object) format, which includes geometry information, allowing for spatial analysis. Each row corresponds to a unique crash incident, identified by a COLLISION_ID, and includes attributes such as the number of persons injured or killed, the presence of street features like crossings or pedestrian signals, and whether the crash occurred on a lit or one-way street. The dataset also contains numerous categorical variables related to the types of roads involved, such as highways, residential streets, and footways, and their specific conditions like markings, surface types, and access permissions.
+
+### Spatial and Risk Analysis Features
+In addition to basic crash attributes, the dataset includes a calculated risk factor for each crash, which quantifies the severity of incidents based on the number of injuries and fatalities, time of day, and proximity to other crashes. The bounding box provided indicates that the data spans a geographical area in New York City, specifically within the coordinates defined by the minimum and maximum longitude and latitude values. The inclusion of detailed spatial geometries enables the use of advanced spatial analysis techniques, allowing for a comprehensive examination of crash hotspots and the contributing factors across different types of roads and intersections. The clustering of data points based on these variables facilitates more targeted safety interventions and policy-making decisions aimed at reducing the frequency and severity of bicycle-related crashes.
+
+
+# Data Modeling
+## Explanation of the Road Risk Assessment Model
+The process involves developing a Random Forest model aimed at assessing road risk based on various factors associated with bicycle crashes. The model is designed to predict a risk_factor for future crashes, which is informed by historical crash data and spatial information.
+
+Initially, the dataset (clustering_data) is preprocessed to remove columns that are not necessary for the modeling process, such as COLLISION_ID, NUMBER.OF.PERSONS.INJURED, and NUMBER.OF.PERSONS.KILLED. The geometry data is also removed to focus on the non-spatial attributes. A seed is set for reproducibility, and the dataset is split into training (70%) and validation (30%) sets. The training and validation data are then converted back to spatial data frames (sf objects) using latitude and longitude coordinates, ensuring that spatial information is preserved for the modeling process.
+
+
+
+```{r,include=FALSE}
+centroids <- st_centroid(clustering_data)
+clustering_data <- st_set_geometry(clustering_data, st_geometry(centroids))
+clustering_data <- clustering_data %>%
+  mutate(
+    latitude = st_coordinates(geometry)[,2],
+    longitude = st_coordinates(geometry)[,1])
+character_columns <- sapply(clustering_data,is.character)
+character_column_names <-names(character_columns[character_columns ==TRUE])
+print(character_column_names)
+
+
+sfdf <- clustering_data |>
+  dplyr::select(-COLLISION_ID, -NUMBER.OF.PERSONS.INJURED, -NUMBER.OF.PERSONS.KILLED) |>
+  st_drop_geometry()
+
+set.seed(123)
+
+train_index <- createDataPartition(sfdf$risk_factor, p = 0.7, list = FALSE)
+train_data <- sfdf[train_index,]
+val_data <- sfdf[-train_index,]
+
+train_data_sf <- st_as_sf(train_data, coords = c("longitude", "latitude"), crs = 4326)
+val_data_sf <- st_as_sf(val_data, coords = c("longitude", "latitude"), crs = 4326)
+
+```
+
+## Spatial Cross-Validation
+The createSpatialFolds function is defined to generate spatial cross-validation folds. This function uses k-means clustering on the spatial centroids of the crash locations to divide the data into k spatial folds. This approach ensures that each fold is spatially distinct, which is important for avoiding overfitting in spatial models. The folds are then used to create indices for cross-validation within the caret package's trainControl function. By using spatial folds, the model can be evaluated in a way that more accurately reflects real-world scenarios, where crashes in different areas might have different risk factors.
+
+## Random Forest Model Training
+A Random Forest model is trained using the spatial folds defined earlier. Random Forest is a robust ensemble learning method that constructs multiple decision trees during training and outputs the mode of the classes for classification or the mean prediction for regression. In this case, the model is set up to predict the risk_factor, which represents the severity and likelihood of crashes at specific locations. The trControl parameter in the train function specifies that spatial cross-validation should be used, ensuring that the model's performance is evaluated on spatially distinct subsets of the data. The importance parameter is set to TRUE, which means that the model will calculate and return the importance of each predictor variable, providing insights into which factors contribute most to the predicted risk.
+
+```{r,include=FALSE,eval=FALSE}
+
+createSpatialFolds <- function(data, k = 5) {
+  set.seed(123)
+  
+  # Ensure data is in sf format with a CRS set
+  if (!inherits(data, "sf")) {
+    stop("Data must be an sf object")
+  }
+  
+  # Compute centroids for the data
+  data_centroids <- st_centroid(data)
+  
+  # Create k-means clustering to divide data into k spatial folds
+  coords <- st_coordinates(data_centroids)
+  kmeans_result <- kmeans(coords, centers = k, nstart = 10)
+  
+  folds <- list()
+  for (i in 1:k) {
+    folds[[i]] <- which(kmeans_result$cluster == i)
+  }
+  
+  # Create indices for caret::trainControl
+  index <- lapply(1:k, function(i) unlist(folds[-i]))
+  
+  list(index = index, cluster = kmeans_result$cluster)
+}
+
+# Apply the function to train_data
+train_data_sf <- st_as_sf(train_data, coords = c("longitude", "latitude"), crs = 4326)
+folds <- createSpatialFolds(train_data_sf, k = 5)
+
+# Define the train control using the spatial folds
+ctrl <- trainControl(
+  method = "cv",
+  number = 5,
+  index = folds$index,
+  savePredictions = "final"
+)
+
+# Train a Random Forest model using the spatial folds
+rf_model <- train(
+  risk_factor ~ .,
+  data = train_data,
+  method = "rf",
+  trControl = ctrl,
+  importance = TRUE
+)
+
+# Summarize the Random Forest model
+print(rf_model)
+```
+
+```{r,include=FALSE}
+rf_model <- readRDS("/Users/nidishsiva/Documents/DATA*6500/Final_Project/Data/random_forest_model.rds")
+predictions <- predict(rf_model, newdata = val_data)
+
+# Evaluation metrics
+rmse <- sqrt(mean((predictions - val_data$risk_factor)^2))
+mae <- mean(abs(predictions - val_data$risk_factor))
+r_squared <- 1 - (sum((predictions - val_data$risk_factor)^2) / sum((val_data$risk_factor - mean(val_data$risk_factor))^2))
+
+list(RMSE = rmse, MAE = mae, R_squared = r_squared)
+```
+
+
+```{r,include=FALSE,eval=FALSE}
+train_index <- createDataPartition(sfdf$risk_factor, p = 0.7, list = FALSE)
+train_data <- sfdf[train_index, ]
+val_data <- sfdf[-train_index, ]
+
+# Convert to sf objects if they are not already
+train_data_sf <- st_as_sf(train_data, coords = c("longitude", "latitude"), crs = 4326)
+val_data_sf <- st_as_sf(val_data, coords = c("longitude", "latitude"), crs = 4326)
+
+# Basic formula including all predictors
+formula <- as.formula(paste("risk_factor ~", paste(setdiff(names(train_data), c("risk_factor", "geometry")), collapse = " + ")))
+
+train_data_sf <- train_data_sf %>%
+  mutate(
+    latitude = st_coordinates(geometry)[,2],  
+    longitude = st_coordinates(geometry)[,1]  
+  )
+
+val_data_sf <- val_data_sf %>%
+  mutate(
+    latitude = st_coordinates(geometry)[,2], 
+    longitude = st_coordinates(geometry)[,1] 
+  )
+
+combined_data_sf <- rbind(train_data_sf, val_data_sf)
+
+
+combined_model <- inla(
+  formula, 
+  data = combined_data_sf, 
+  family = "gaussian",
+  control.predictor = list(compute = TRUE),
+  control.compute = list(dic = TRUE, waic = TRUE)
+)
+
+# Extract the fitted values for the validation set
+val_predictions <- combined_model$summary.fitted.values[(nrow(train_data_sf) + 1):nrow(combined_data_sf), ]
+
+# Add predictions to the validation data
+val_data_sf$predicted_risk_factor <- val_predictions$mean
+
+mae <- mean(abs(val_data_sf$risk_factor - val_data_sf$predicted_risk_factor))
+r_squared <- 1 - sum((val_data_sf$predicted_risk_factor - val_data_sf$risk_factor)^2) / 
+                 sum((val_data_sf$risk_factor - mean(val_data_sf$risk_factor))^2)
+
+print(paste("Mean Absolute Error on Validation Set:", mae))
+print(paste("R-squared on Validation Set:", r_squared))
+```
+
+
+
+# Results 
+```{r,include=FALSE,warning=FALSE}
+manhattan_bbox <-  st_bbox(c(xmin = -74.0100, xmax = -73.9650, ymin = 40.7200, ymax = 40.7620), crs = st_crs(4326))
+
+nyc_highways_cropped <- st_crop(nyc_highways, manhattan_bbox)
+
+df_sf <- st_as_sf(val_data, coords = c("longitude", "latitude"), crs = 4326)
+df_sf$risk_factor <- predictions
+df_sf_buffered <- st_buffer(df_sf, dist = 60)
+
+df_sf_buffered_cropped <- st_crop(df_sf_buffered, manhattan_bbox)
+
+#intersect_indices <- st_intersects(bicycle_amenities_filt, collision_buffer, sparse = FALSE)
+
+intersect_indices <- st_intersects(df_sf_buffered_cropped, nyc_highways_cropped, sparse = FALSE)
+df_sf_buffered_intersect <- df_sf_buffered_cropped[apply(intersect_indices, 1, any), , drop = FALSE]
+
+# Compute the intersection
+intersection_result <- st_intersection(nyc_highways_cropped, df_sf_buffered_cropped)
+```
+
+
+```{r,echo=FALSE,fig.cap="1.  Map Visualization of Bicycle Accident Risk Factors in Manhattan: Highlighting the intersections of highways and buffered points with varying levels of risk factors, from low (blue) to high (red)",fig.align='center',warning=FALSE}
+tm <- tm_shape(nyc_highways_cropped) +
+  tm_lines(col = "grey", lwd = 0.5) +
+  
+  tm_shape(intersection_result) +
+  tm_lines(col = "black", lwd = 2.2) +
+  
+  tm_shape(df_sf_buffered_intersect) +
+  tm_polygons(col = "risk_factor", palette = "-RdYlBu", alpha = 0.45) +  
+  tm_basemap(server = "OpenStreetMap", group ="CartoDB.Positron") +
+  
+  tm_view(bbox = manhattan_bbox) +
+  
+  tm_layout(title = "Overlay of Highways, Intersections, and Buffered Points",
+            legend.outside = TRUE)
+tm
+```
+
+```{r,echo=FALSE,fig.cap="2.  Map Visualization of Bicycle Accident Risk Factors in Manhattan: Highlighting the intersections of highways and buffered points with varying levels of risk factors, from low (blue) to high (red)",warning=FALSE}
+
+# Please uncomment tm in the above r chunk and run it for interactive mode.  Kindly refer to Data.Zip for the below image.
+knitr::include_graphics("/Users/nidishsiva/Documents/DATA*6500/Final_Project/Data/prediction_random_forest.jpeg")
+```
+
+## Analysis and Interpretation:
+The map presented shows an overlay of highways, intersections, and buffered points within a section of Manhattan, highlighting areas with varying levels of risk for bicyclists. The risk factor is color-coded, with darker shades indicating higher risk levels and lighter shades representing lower risk levels. This visualization is critical for understanding the spatial distribution of potential hazards for cyclists in the area.
+
+## Risk Factor Distribution:
+
+### High-Risk Areas: 
+The red and orange circles indicate intersections and road segments with the highest calculated risk factors, ranging from 0.30 to 0.45. These areas are likely locations with frequent crashes, severe injuries, or fatalities. The larger size of these circles also suggests a higher concentration of accidents, which could be due to complex intersections, poor visibility, or inadequate cycling infrastructure.
+
+### Moderate to Low-Risk Areas: 
+The blue and yellow circles, representing risk factors between 0.05 and 0.30, show regions with moderate to lower risks. These areas might still experience accidents but with less severity or frequency compared to the high-risk zones. Factors contributing to these risk levels might include the volume of traffic, road conditions, or the presence of protective measures such as bike lanes.
+
+## Impact on Bicyclist Safety:
+The plot highlights the importance of targeted interventions in specific high-risk areas to improve bicyclist safety. For instance, infrastructure enhancements like better lighting, clearer signage, and dedicated bike lanes in high-risk zones could significantly reduce the likelihood of accidents. Furthermore, this analysis can inform city planners and policymakers about the critical areas that need immediate attention to protect cyclists, ultimately contributing to safer urban mobility.
+
+This visualization serves as a powerful tool for both understanding current risks and planning future safety measures to mitigate hazards for cyclists in Manhattan and the same can be repeated for different boroughs and parts of New York.
+
+
+# Results
+
+The performance of the predictive model was evaluated based on its ability to accurately assess the risk of bicycle collisions across New York City’s road network. The model's effectiveness was measured using key metrics such as Root Mean Square Error (RMSE), Mean Absolute Error (MAE), and R-squared. These metrics provide insights into how well the model's predictions align with the actual observed data, offering a comprehensive view of the model's accuracy and reliability.
+Model Performance Metrics
+
+## Root Mean Square Error (RMSE):
+The final model achieved an RMSE of 0.05662313 for Random Forest Model and 0.0876462 for Gaussian INLA , suggesting that the model's predictions are, on average, very close to the actual risk values. This low RMSE value reflects the model's capability to consistently predict risk with minimal deviation from the observed data.
+
+## Mean Absolute Error (MAE):
+The final model recorded an MAE of 0.035982 for Random Forest and  0.06052 for, which means that, on average, the model's predictions were off by a small margin. This low MAE further underscores the model's precision, indicating that the predicted risk scores are closely aligned with the actual collision risks observed in the dataset.
+## R-squared:
+
+The final model achieved an R-squared value of 0.73977 and 0.34530 for INLA, meaning that approximately 40.8% of the variability in collision risk across different locations in NYC can be explained by the features included in the model, such as road quality, lane markings, intersection density, and the presence of cycling infrastructure. While this value suggests that the model captures a significant portion of the factors influencing collision risk, it also indicates that there are additional variables or complexities that the model does not account for, which could be explored in future research.
+
+The strong performance metrics of the model suggest that it is well-suited for identifying high-risk areas for bicycle collisions in New York City. The low RMSE and MAE values indicate that the model can accurately predict collision risks, making it a valuable tool for both cyclists and urban planners. Cyclists can use the model's predictions to choose safer routes, while city planners can identify areas that require infrastructure improvements or targeted safety interventions.
+
+
+# Discussion
+The project provides a comprehensive analysis of road risk factors for bicyclists in New York City, with a specific focus on non-behavioral factors such as road conditions, infrastructure, and environmental variables. The analysis demonstrates that these factors significantly influence the likelihood of bicycle collisions, and by identifying high-risk areas, the study offers valuable insights for enhancing cyclist safety.
+
+Key aspects of the project include the development of a risk factor model using Random Forest and INLA models, which were validated through spatial cross-validation techniques. These models allowed for an in-depth examination of various predictor variables, including road types, surface conditions, and time of day, and their impact on bicyclist safety. The study highlights that targeted interventions, such as improved road maintenance, better signage, and the expansion of dedicated bike lanes, could substantially reduce the risk of accidents, particularly in identified high-risk zones.
+
+Moreover, the spatial analysis component, particularly the use of Geographic Information Systems (GIS) to visualize risk factors across Manhattan, provides a clear and actionable framework for city planners. The maps created in this study not only identify areas with the highest risk but also allow for the visualization of potential intersections where multiple risk factors converge, offering a strategic approach to implementing safety improvements.
+
+# Limitation
+Despite the robustness of the analysis, there are several limitations to consider:
+
+1.  Data Quality and Completeness: The accuracy of the results is dependent on the quality and completeness of the data used. Missing or inaccurate data, particularly regarding crash reports and road conditions, could lead to biased or incomplete risk assessments.
+2.  Modeling Assumptions: The risk factor models developed in this study rely on several assumptions, such as the weighting of injuries and fatalities in the risk calculation. These assumptions, while based on logical reasoning, may not fully capture the complexity of real-world scenarios. Additionally, the model may not account for all potential variables that could influence crash risk, such as weather conditions or driver behavior.
+3.  Spatial Resolution: The spatial analysis was focused on Manhattan, which, while representative, does not encompass the entire city. Therefore, the findings may not be fully generalizable to other boroughs or regions with different road conditions and traffic patterns. The chosen buffer size and spatial resolution might also limit the granularity of the risk assessments.
+4.  Temporal Changes: The analysis is based on historical data and does not account for potential changes in traffic patterns, infrastructure developments, or urban policies that may have occurred since the data was collected. As a result, the risk factors identified may not reflect current or future conditions accurately.
+5.  Computational Intensity: The extensive data processing and model training required significant computational resources. While the study managed these challenges by focusing on a specific geographic area, scaling the analysis to cover the entire city or multiple cities would require even greater computational power, potentially limiting the feasibility of the approach for larger-scale applications.
+
+# Conclusion
+
+The analysis presented in this project demonstrates the significant impact that non-behavioral factors, such as road conditions and infrastructure, have on the risk of bicycle collisions in New York City. By employing advanced machine learning models and spatial analysis techniques, the study offers a detailed and actionable approach to improving cyclist safety across the city.
+
+One of the key strengths of this study lies in its ability to move beyond traditional, reactive safety measures, offering a proactive framework that anticipates risks before they manifest into accidents. By identifying high-risk areas and the underlying factors contributing to these risks, the study provides a foundation for targeted interventions. These interventions can range from infrastructure improvements, such as the installation of dedicated bike lanes, to enhanced road maintenance efforts that address issues like poor pavement conditions or inadequate signage.
+
+Moreover, the integration of spatial analysis into the risk assessment process allows for a nuanced understanding of how different factors interact in specific geographic locations. This geographic specificity is crucial for urban planners and policymakers who need to allocate resources efficiently and prioritize interventions in areas where they will have the greatest impact on cyclist safety.
+The findings from this study have broader implications beyond New York City. As urban cycling continues to grow in popularity worldwide, the methodologies and insights developed here can be adapted and applied to other cities facing similar challenges. The approach provides a template for cities to assess and mitigate road risks proactively, ultimately contributing to safer and more sustainable urban environments.
+
+However, the study also acknowledges its limitations, particularly in terms of data quality, modeling assumptions, and the focus on a specific geographic area. Addressing these limitations in future research will be essential for refining the model and ensuring that its predictions remain accurate and relevant as urban landscapes and traffic patterns evolve.
+
+In conclusion, this project represents a significant step forward in the field of urban cycling safety. By harnessing the power of data and spatial analysis, it provides a robust tool for reducing bicycle collisions and enhancing the overall safety of urban roadways. The insights gained from this study not only have the potential to save lives in New York City but also offer valuable lessons for cities around the world as they work to promote cycling as a safe and viable mode of transportation.
+
+
+# References
+
+NYC Open Data. (n.d.). Traffic Accident Reports. Retrieved from https://data.cityofnewyork.us/
+
+# Data Source Links
+
+* 1.  Motor Vehicle Collisions: Crashes - * https://data.cityofnewyork.us/Public-Safety/Motor-Vehicle-Collisions-Crashes/h9gi-nx95/about_data
+* 2.   Motor Vehicle Collisions: Vehicles - * https://data.cityofnewyork.us/Public-Safety/Motor-Vehicle-Collisions-Vehicles/bm4k-52h4/about_data
